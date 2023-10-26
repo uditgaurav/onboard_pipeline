@@ -1,0 +1,344 @@
+template:
+  name: Chaos Onboarding Pipeline
+  type: Pipeline
+  projectIdentifier: ChaosDev
+  orgIdentifier: default
+  spec:
+    stages:
+      - stage:
+          name: "onboard chaos "
+          identifier: onboard_chaos
+          description: ""
+          type: Custom
+          spec:
+            execution:
+              steps:
+                - step:
+                    type: ShellScript
+                    name: Create Onboard Util Pod
+                    identifier: Create_Onboard_Util_Pod
+                    spec:
+                      shell: Bash
+                      onDelegate: true
+                      source:
+                        type: Inline
+                        spec:
+                          script: |
+                            #!/bin/bash
+
+                            ONBOARDING_NAMESPACE=<+pipeline.variables.ONBOARDING_NAMESPACE>
+                            ONBOARDING_SERVICE_ACCOUNT_NAME=<+pipeline.variables.ONBOARDING_SERVICE_ACCOUNT_NAME>
+                            PROJECT_ID=<+pipeline.variables.PROJECT_ID>
+                            INFRA_NS=<+pipeline.variables.INFRA_NAMESPACE_DEV>
+
+                            # Validate if environment variables are set
+                            if [ -z "$ONBOARDING_NAMESPACE" ]; then
+                                echo "ONBOARDING_NAMESPACE environment variable is not set. Exiting." >&3
+                                exit 1
+                            fi
+
+                            if [ -z "$ONBOARDING_SERVICE_ACCOUNT_NAME" ]; then
+                                echo "ONBOARDING_SERVICE_ACCOUNT_NAME environment variable is not set. Exiting." >&3
+                                exit 1
+                            fi
+
+                            PROJECT_ID_LOWER=$(echo "$PROJECT_ID" | tr '[:upper:]' '[:lower:]')
+
+                            # Deployment configuration
+                            DEPLOYMENT_NAME="onboard-$PROJECT_ID_LOWER"
+                            IMAGE="uditgaurav/onboard-hce-aws:0.1.0"
+                            IMAGE_PULL_POLICY="Always"
+
+                            # Deployment YAML
+                            DEPLOYMENT_YAML=$(cat <<EOF
+                            apiVersion: apps/v1
+                            kind: Deployment
+                            metadata:
+                              name: $DEPLOYMENT_NAME
+                              namespace: $ONBOARDING_NAMESPACE
+                              labels:
+                                project-id: $PROJECT_ID_LOWER
+                                infra-ns: $INFRA_NS
+                            spec:
+                              replicas: 1
+                              selector:
+                                matchLabels:
+                                  app: $DEPLOYMENT_NAME
+                                  project-id: $PROJECT_ID_LOWER
+                                  infra-ns: $INFRA_NS
+                              template:
+                                metadata:
+                                  labels:
+                                    app: $DEPLOYMENT_NAME
+                                    project-id: $PROJECT_ID_LOWER
+                                    infra-ns: $INFRA_NS
+                                spec:
+                                  containers:
+                                  - name: $DEPLOYMENT_NAME
+                                    image: $IMAGE
+                                    imagePullPolicy: $IMAGE_PULL_POLICY
+                                    command: ["/bin/sh", "-c", "sleep 20000"]
+                                  serviceAccountName: $ONBOARDING_SERVICE_ACCOUNT_NAME
+                            EOF
+                            )
+
+                            echo "$DEPLOYMENT_YAML" | kubectl apply -f -
+
+                            # Check if action was successful
+                            if [ $? -ne 0 ]; then
+                                echo "Action on deployment failed." >&3
+                                exit 1
+                            fi
+
+                            # Wait for replicas to be available
+                            DESIRED_REPLICA_COUNT=$(kubectl get deployment $DEPLOYMENT_NAME -n $ONBOARDING_NAMESPACE -o=jsonpath='{.spec.replicas}')
+                            AVAILABLE_REPLICA_COUNT=$(kubectl get deployment $DEPLOYMENT_NAME -n $ONBOARDING_NAMESPACE -o=jsonpath='{.status.availableReplicas}')
+
+                            while [ "$DESIRED_REPLICA_COUNT" != "$AVAILABLE_REPLICA_COUNT" ]; do
+                                sleep 1
+                                AVAILABLE_REPLICA_COUNT=$(kubectl get deployment $DEPLOYMENT_NAME -n $ONBOARDING_NAMESPACE -o=jsonpath='{.status.availableReplicas}')
+                            done
+
+                            podname=$(kubectl get pods -n $ONBOARDING_NAMESPACE -l app=$DEPLOYMENT_NAME -o jsonpath='{.items[*].metadata.name}')
+                            echo $podname
+                            export podname
+
+                            kubectl exec -n $ONBOARDING_NAMESPACE $podname -- /bin/sh -c "mkdir -p /root/.aws && echo -e '[default]\naws_access_key_id = <+pipeline.variables.AWS_ACCESS_KEY_ID>\naws_secret_access_key = <+pipeline.variables.AWS_SECRET_ACCESS_KEY>' > /root/.aws/credentials"
+                      environmentVariables: []
+                      outputVariables:
+                        - name: podname
+                          type: String
+                          value: podname
+                      delegateSelectors:
+                        - onboard-util-delegate
+                    timeout: 10m
+                - step:
+                    type: ShellScript
+                    name: Create Project
+                    identifier: Create_Project
+                    spec:
+                      shell: Bash
+                      onDelegate: true
+                      delegateSelectors:
+                        - onboard-util-delegate
+                      source:
+                        type: Inline
+                        spec:
+                          script: kubectl exec --stdin --tty $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /usr/local/bin/onboard_hce_aws --create-project <+pipeline.variables.PROJECT_ID> --api-key <+pipeline.variables.HARNESS_API_KEY> --organisation <+pipeline.variables.ORGANISATION_ID> --account-id <+pipeline.variables.ACCOUNT_ID> --modules CHAOS --project-color blue
+                      environmentVariables:
+                        - name: POD_NAME
+                          type: String
+                          value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                      outputVariables: []
+                    timeout: 10m
+                - parallel:
+                    - step:
+                        type: ShellScript
+                        name: Create App Dev Chaos Infra
+                        identifier: Create_App_Dev_Chaos_Infra
+                        spec:
+                          shell: Bash
+                          onDelegate: true
+                          delegateSelectors:
+                            - onboard-util-delegate
+                          source:
+                            type: Inline
+                            spec:
+                              script: kubectl exec -it $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /usr/local/bin/onboard_hce_aws --account-id <+pipeline.variables.ACCOUNT_ID> --api-key <+pipeline.variables.HARNESS_API_KEY> --infra-name <+pipeline.variables.INFRA_NAME_DEV> --infra-namespace <+pipeline.variables.INFRA_NAMESPACE_DEV> --organisation <+pipeline.variables.ORGANISATION_ID> --project <+pipeline.variables.PROJECT_ID> --actions only_install
+                          environmentVariables:
+                            - name: POD_NAME
+                              type: String
+                              value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                          outputVariables: []
+                        timeout: 10m
+                    - step:
+                        type: ShellScript
+                        name: Create App Staging Chaos Infra
+                        identifier: Create_App_Staging_Chaos_Infra
+                        spec:
+                          shell: Bash
+                          onDelegate: true
+                          delegateSelectors:
+                            - onboard-util-delegate
+                          source:
+                            type: Inline
+                            spec:
+                              script: kubectl exec -it $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /usr/local/bin/onboard_hce_aws --account-id <+pipeline.variables.ACCOUNT_ID> --api-key <+pipeline.variables.HARNESS_API_KEY> --infra-name <+pipeline.variables.INFRA_NAME_STAGING> --infra-namespace <+pipeline.variables.INFRA_NAMESPACE_STAGING> --organisation <+pipeline.variables.ORGANISATION_ID> --project <+pipeline.variables.PROJECT_ID> --actions only_install
+                          environmentVariables:
+                            - name: POD_NAME
+                              type: String
+                              value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                          outputVariables: []
+                        timeout: 10m
+                - parallel:
+                    - step:
+                        type: ShellScript
+                        name: Annotate App Dev Infra With Role ARN
+                        identifier: Annotate_App_Dev_Infra_With_Role_ARN
+                        spec:
+                          shell: Bash
+                          onDelegate: true
+                          delegateSelectors:
+                            - onboard-util-delegate
+                          source:
+                            type: Inline
+                            spec:
+                              script: kubectl exec --stdin --tty $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /usr/local/bin/onboard_hce_aws --account-id <+pipeline.variables.ACCOUNT_ID> --api-key <+pipeline.variables.HARNESS_API_KEY> --infra-name <+pipeline.variables.INFRA_NAME_DEV> --infra-namespace <+pipeline.variables.INFRA_NAMESPACE_DEV> --organisation <+pipeline.variables.ORGANISATION_ID> --project <+pipeline.variables.PROJECT_ID> --actions only_annotate --role-name aws-ecs-ssm
+                          outputVariables: []
+                          environmentVariables:
+                            - name: POD_NAME
+                              type: String
+                              value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                        timeout: 10m
+                    - step:
+                        type: ShellScript
+                        name: Annotate App Staging Infra With Role ARN
+                        identifier: Annotate_App_Staging_Infra_With_Role_ARN
+                        spec:
+                          shell: Bash
+                          onDelegate: true
+                          delegateSelectors:
+                            - onboard-util-delegate
+                          source:
+                            type: Inline
+                            spec:
+                              script: kubectl exec --stdin --tty $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /usr/local/bin/onboard_hce_aws --account-id <+pipeline.variables.ACCOUNT_ID> --api-key <+pipeline.variables.HARNESS_API_KEY> --infra-name <+pipeline.variables.INFRA_NAME_STAGING> --infra-namespace <+pipeline.variables.INFRA_NAMESPACE_STAGING> --organisation <+pipeline.variables.ORGANISATION_ID> --project <+pipeline.variables.PROJECT_ID> --actions only_annotate --role-name aws-ecs-ssm
+                          environmentVariables:
+                            - name: POD_NAME
+                              type: String
+                              value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                          outputVariables: []
+                        timeout: 10m
+                - step:
+                    type: ShellScript
+                    name: Create Experiments
+                    identifier: Create_Experiments
+                    spec:
+                      shell: Bash
+                      onDelegate: true
+                      delegateSelectors:
+                        - onboard-util-delegate
+                      source:
+                        type: Inline
+                        spec:
+                          script: |
+                            echo "API call to convert hub template to stringified json and create experiment"
+                            kubectl exec --stdin --tty $POD_NAME -n <+pipeline.variables.ONBOARDING_NAMESPACE> -- /bin/sh -c "\
+                            export ACCOUNT_ID='<+pipeline.variables.ACCOUNT_ID>' && \
+                            export ORG_ID='<+pipeline.variables.ORGANISATION_ID>' && \
+                            export PROJECT_ID='<+pipeline.variables.PROJECT_ID>' && \
+                            export HUB_NAME='<+pipeline.variables.CHAOSHUB_NAME>' && \
+                            export AWS_RESOURCE_NAME='<+pipeline.variables.EXPERIMENT_NAME>' && \
+                            export X_API_TOKEN='<+pipeline.variables.HARNESS_API_KEY>' && \
+                            export SOURCE_URL='' && \
+                            export SERVER_URL='https://app.harness.io/gateway/chaos/manager/api/query?routingId=cTU1lRSWS2SSRV9phKvuOA' && \
+                            export INFRA_NAME='<+pipeline.variables.INFRA_NAME_DEV>' && \
+                            export NAMESPACE='<+pipeline.variables.INFRA_NAMESPACE_DEV>' && \
+                            /usr/local/bin/experiments"
+                      environmentVariables:
+                        - name: POD_NAME
+                          type: String
+                          value: <+execution.steps.Create_Onboard_Util_Pod.output.outputVariables.podname>
+                      outputVariables: []
+                    timeout: 10m
+                - step:
+                    type: ShellScript
+                    name: Delete Onboard Util Pod
+                    identifier: Delete_Onboard_Util_Pod
+                    spec:
+                      shell: Bash
+                      onDelegate: true
+                      delegateSelectors:
+                        - onboard-util-delegate
+                      source:
+                        type: Inline
+                        spec:
+                          script: |-
+                            #!/bin/bash
+
+                            ONBOARDING_NAMESPACE=<+pipeline.variables.ONBOARDING_NAMESPACE>
+                            PROJECT_ID=<+pipeline.variables.PROJECT_ID>
+                            PROJECT_ID_LOWER=$(echo "$PROJECT_ID" | tr '[:upper:]' '[:lower:]')
+                            DEPLOYMENT_NAME="onboard-$PROJECT_ID_LOWER"
+
+                            kubectl delete deploy $DEPLOYMENT_NAME -n $ONBOARDING_NAMESPACE
+                      environmentVariables: []
+                      outputVariables: []
+                    timeout: 10m
+          tags: {}
+    variables:
+      - name: HARNESS_API_KEY
+        type: Secret
+        description: ""
+        required: false
+        value: harness_pat_token_onboard
+      - name: ORGANISATION_ID
+        type: String
+        description: ""
+        required: false
+        value: onboardtrial
+      - name: ACCOUNT_ID
+        type: String
+        description: ""
+        required: false
+        value: cTU1lRSWS2SSRV9phKvuOA
+      - name: PROJECT_ID
+        type: String
+        default: ChaosDev
+        description: Project ID
+        required: true
+        value: <+input>
+      - name: INFRA_NAMESPACE_DEV
+        type: String
+        description: Infra namespace for dev
+        required: false
+        value: app1-dev
+      - name: INFRA_NAME_DEV
+        type: String
+        description: Infra name for dev
+        required: false
+        value: app1-dev
+      - name: INFRA_NAME_STAGING
+        type: String
+        description: Infra name for staging
+        required: false
+        value: app1-stg
+      - name: INFRA_NAMESPACE_STAGING
+        type: String
+        description: Infra namespace for staging
+        required: false
+        value: app1-stg
+      - name: ONBOARDING_NAMESPACE
+        type: String
+        description: Onboarding namespace
+        required: false
+        value: default
+      - name: ONBOARDING_SERVICE_ACCOUNT_NAME
+        type: String
+        description: Onboarding service account name
+        required: false
+        value: chaos-onboard-util
+      - name: AWS_ACCESS_KEY_ID
+        type: Secret
+        description: ""
+        required: false
+        value: ONBOARD_AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        type: Secret
+        description: ""
+        required: false
+        value: ONBOARD_AWS_SECRET_ACCESS_KEY
+      - name: CHAOSHUB_NAME
+        type: String
+        description: ""
+        required: false
+        value: <+input>
+        default: Enterprise ChaosHub
+      - name: EXPERIMENT_NAME
+        type: String
+        description: ""
+        required: false
+        value: <+input>
+        default: nginx-pod-delete
+  identifier: Chaos_Onboarding_Pipeline
+  versionLabel: v1
