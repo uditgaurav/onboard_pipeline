@@ -1,7 +1,7 @@
 # Chaos Onboarding Pipeline Documentation
 
 ## Overview
-The `chaos-onboarding-pipeline` is designed to onboard chaos in a structured and automated manner. The pipeline consists of multiple stages and steps that deploy, configure, and validate the required components for chaos engineering in a Kubernetes environment.
+The `chaos-onboarding-pipeline` is designed to onboard chaos in a structured and automated manner. The pipeline consists of multiple stages and steps that deploy, configure, and validate the required components for harness chaos engineering in a Kubernetes environment.
 
 ## Pipeline Details
 
@@ -17,7 +17,7 @@ The `chaos-onboarding-pipeline` is designed to onboard chaos in a structured and
 #### Stage: Onboard Chaos
 - **Identifier**: onboard_chaos
 - **Type**: Custom
-- **Description**: This stage encompasses several steps to deploy and configure the necessary components for chaos engineering.
+- **Description**: This stage encompasses several steps to deploy and configure the necessary components for harness chaos engineering.
 
   1. **Step: Create Onboard Util Pod**
      - Executes a shell script to create a utility pod for onboarding.
