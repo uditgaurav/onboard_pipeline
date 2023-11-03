@@ -46,7 +46,7 @@ pipeline:
 
                           # Deployment configuration
                           DEPLOYMENT_NAME="onboard-$PROJECT_ID_LOWER"
-                          IMAGE="uditgaurav/onboard-hce-aws:0.1.1"
+                          IMAGE="chaosnative/onboard-hce-aws:0.2.0"
                           IMAGE_PULL_POLICY="Always"
 
                           # Deployment YAML
